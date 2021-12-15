@@ -4,6 +4,8 @@ The rate of suicide has increased in the most recent decades. Between 2007 and 2
 
 The details below document the various files and some notes on running the analysis. Please follow the instructions and code comments to effectively reproduce our analyses. 
 
+Please see the GitHub at https://github.com/herenya7/ReproducibleAnalysis7430. 
+
 **REQUIRED PACKAGES**
 The following packages are required for conducting all data analyses and tabling processes. Please install these on your machine. The analyses will load the instance of the particular package:
 `mice`, `geepack`, `lme4`, `lmerTest`, `dplyr`, `forccats`, `doBy`, `gt`, `ggplot2`, `tidyr`, `reshape2`, `gtsummary`, `tableone`
