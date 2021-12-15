@@ -26,7 +26,7 @@ library(reshape2)
 library(gtsummary)
 library(tableone)
 
-wd <- 'C:/Users/jessi/OneDrive/Documents/GradSchool/Coursework/Fall2021/CorrData/Project/Reproducibility'
+wd <- 'add filepath here'
 setwd(wd)
 ```
 
