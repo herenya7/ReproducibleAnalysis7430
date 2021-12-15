@@ -1,0 +1,739 @@
+---
+title: "7430 Project Code"
+author: "Ziou Jiang"
+date: "12/1/2021"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    code_download: yes
+---
+
+#### This section is the set up section, loading all necessary packages.
+
+```{r set up, message=FALSE}
+library(mice)
+library(geepack)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(forcats)
+library(doBy)
+library(gt)
+library(ggplot2)
+library(tidyr)
+library(reshape2)
+library(gtsummary)
+library(tableone)
+
+wd <- 'C:/Users/jessi/OneDrive/Documents/GradSchool/Coursework/Fall2021/CorrData/Project/Reproducibility'
+setwd(wd)
+```
+
+```{r data cleaning from raw data, warning=FALSE}
+# LOAD DATA ---------------------------------------------------------------
+#datafiles 
+# Please load the dataset using your own file path
+load(file="./Data/21600-0001-Data.rda")
+load(file="./Data/21600-0005-Data.rda")
+load(file='./Data/21600-0008-Data.rda')
+load(file='./Data/21600-0022-Data.rda')
+
+# Load and select parameters from each wave's datafile  
+# The variable names will be cleaned and changed to meaningful things later on
+w1 <- da21600.0001 %>%
+  dplyr::select(AID,BIO_SEX,H1GI1Y,H1GI9,H1GI4,H1SU1,H1GH28,H1PR5,H1PR8,H1DS3,
+         H1PR4,H1DA7,H1NB5,H1IR15,H1SU5,H1SU7,H1DS14) #excluded H1SU2, how many times attempt suicide
+
+w2 <- da21600.0005 %>%
+  dplyr::select(AID,BIO_SEX2,H2SU1,H2GI1Y,H2GH30,H2PR8,H2DS3,H2PR4,H2DS3, 
+         H2DA7,H2NB5,H2IR15,H2SU5,H2SU7,H2DS13)
+
+w3 <- da21600.0008 %>%
+  dplyr::select(AID,BIO_SEX3,H3OD1Y,H3TO130,H3GH2,H3DA15,H3IR8,H3TO134,
+         H3TO136,H3EC26,H3DS7)# excluded H3TO131, how many times attempt suicide
+
+w4 <- da21600.0022 %>%
+  dplyr::select(AID,BIO_SEX4,H4SE1,H4OD1Y,
+         H4GH7,H4EO7,H4SE5,H4DS7)
+
+# Combine all wave data into one dataframe  
+dflist <- list(w1,w2,w3,w4)
+
+dforig <- Reduce(
+  function(x,y,...) merge(x,y,all=T,...),
+  dflist)
+
+# RENAME VARIABLES AS KEYWORDS --------------------------------------------
+# Rename variables for readability
+# Includes wave numbers in variable name (temporary for data in wide format, will fix this later on)
+dforig <- dforig %>%
+  rename(birthyrw1=H1GI1Y, #rename birthyear variables
+         birthyrw2=H2GI1Y, 
+         birthyrw3=H3OD1Y, 
+         birthyrw4=H4OD1Y) %>%
+  rename(race = H1GI9) %>%
+  rename(ethnicity = H1GI4) %>%
+  rename(outcome_suicidew1 = H1SU1, fam_understandw1=H1PR5,
+         fam_attentionw1=H1PR8, liew1=H1DS3, fri_carew1=H1PR4,
+         fri_talkw1=H1DA7, safew1=H1NB5,res_homew1=H1IR15,fri_suicidew1=H1SU5,
+         fam_suicidew1=H1SU7, fightw1 = H1DS14,weightw1=H1GH28) %>%
+  rename(outcome_suicidew2 = H2SU1,weightw2=H2GH30,fam_attentionw2=H2PR8,liew2=H2DS3,fri_carew2=H2PR4,
+         liew2=H2DS3,fri_talkw2=H2DA7,safew2=H2NB5,res_homew2=H2IR15,
+         fri_suicidew2=H2SU5,fam_suicidew2=H2SU7,fightw2=H2DS13) %>%
+  rename(outcome_suicidew3=H3TO130,outcome_suicidew4=H4SE1,weightw3=H3GH2,fri_talkw3=H3DA15,
+         res_homew3= H3IR8,fri_suicidew3=H3TO134,fam_suicidew3=H3TO136,
+         welfarew3=H3EC26,fightw3=H3DS7,weightw4=H4GH7,res_homew4=H4EO7,
+         frifam_suicidew4=H4SE5,fightw4=H4DS7)
+
+# Coerce into char to enable modify
+df <- dforig %>%
+  mutate(across(everything(), as.character))
+
+# Remove the number in parentheses that appear after some data items for cleanup purposes
+for (i in 2:ncol(df)){
+  df[,i] <- sapply(strsplit((df[,i]), "){1}"), tail, 1,perl=T)
+}
+
+# Then coerce back into factor form
+df <- df %>% mutate(across(everything(), as.factor))
+
+# CLEAN UP COVARIATES -----------------------------------------------------
+# Check covariates missing >50% of data
+df <- df[, which(colMeans(!is.na(df)) > 0.5)] #from 49 to 40 columns
+
+# Chose not to remove individuals missing large number of data (would cause bias 
+# and loss of generalizibility), used multiple imputed instead
+
+# Impute Birth year: keep birth year W1, unless missing then use 2, then use 3, etc.
+df$birthyr <- df$birthyrw1
+
+for(i in 1:nrow(df)){
+  if(is.na(df$birthyr[i])){
+    df$birthyr[i] <- df$birthyrw2[i]
+  }
+  else if(is.na(df$birthyr[i]) & is.na(df$birthyrw2[i])){
+    df$birthyr[i] <- df$birthyrw3[i]
+  }
+  else if(is.na(df$birthyr[i]) & is.na(df$birthyrw2[i]) & is.na(df$birthyrw3[i])){
+    df$birthyr[i] <- df$birthyrw3[i]
+  }
+}
+
+# Remove wave-specific birthyr
+df <- df %>% dplyr::select(-c(birthyrw1,birthyrw2,birthyrw3,birthyrw4))
+
+# Impute Bio-Sex - set missing Bio-Sex to the AID's most recent Bio-Sex response
+for(i in 1:nrow(df)){
+  if(is.na(df$BIO_SEX[i])){
+    df$BIO_SEX[i] <- df$BIO_SEX4[i] 
+  }
+  if(is.na(df$BIO_SEX2[i])){
+    df$BIO_SEX2[i] <- df$BIO_SEX[i] 
+  }
+  if(is.na(df$BIO_SEX3[i])){
+    df$BIO_SEX3[i] <- df$BIO_SEX2[i] 
+  }
+  if(is.na(df$BIO_SEX4[i])){
+    df$BIO_SEX4[i] <- df$BIO_SEX3[i] 
+  }
+}
+
+# Make a copy of dataset for generating Table 1 in the future
+tb1.data <- df
+
+# Impute NA's using multiple imputation:
+set.seed(1101985)
+df <- complete(mice(df,maxit=0)) 
+# Three logged events are just redundant variables, okay to ignore
+# Can be verifies by running the following:
+# mice(df)$loggedEvents
+
+# Separate out Wave variables
+
+# Select wave1 columns, rename for readability, and add year 
+dfw1 <- df %>% 
+  select(AID,birthyr,BIO_SEX,race,ethnicity,outcome_suicidew1,weightw1,
+         fam_understandw1,fam_attentionw1,liew1,fri_carew1,
+         fri_talkw1,safew1,res_homew1,fightw1) %>%
+  mutate(TIME='1') %>%
+  rename(outcome_suicide=outcome_suicidew1,weight=weightw1,
+         fam_understand=fam_understandw1,fam_attention=fam_attentionw1,
+         lie=liew1,fri_care=fri_carew1,fri_talk=fri_talkw1,safe=safew1,
+         res_home=res_homew1,fight=fightw1) %>%
+  mutate(YEAR=1994)
+
+# Select wave2 columns, rename for readability, and add year             
+dfw2 <- df %>% 
+  select(AID,birthyr,BIO_SEX2,race,ethnicity,outcome_suicidew2,weightw2,
+         fam_attentionw2,liew2,fri_carew2,fri_talkw2,safew2,
+         res_homew2,fightw2) %>%
+  mutate(TIME='2') %>%
+  rename(BIO_SEX=BIO_SEX2,outcome_suicide=outcome_suicidew2,weight=weightw2,
+         fam_attention=fam_attentionw2,lie=liew2,fri_care=fri_carew2,
+         fri_talk=fri_talkw2,safe=safew2,res_home=res_homew2,fight=fightw2) %>%
+  mutate(YEAR=1996)
+
+# Select wave3 columns, rename for readability, and add year 
+dfw3 <- df %>%
+  select(AID,birthyr,BIO_SEX3,race,ethnicity,outcome_suicidew3,weightw3,fri_talkw3,res_homew3,fightw3)%>%
+  mutate(TIME='3') %>%
+  rename(BIO_SEX=BIO_SEX3,outcome_suicide=outcome_suicidew3,weight=weightw3,
+         fri_talk=fri_talkw3, res_home=res_homew3, fight=fightw3) %>%
+  mutate(YEAR=2002)
+
+# Select wave4 columns, rename for readability, and add year        
+dfw4 <- df %>%
+  select(AID,birthyr,BIO_SEX4,race,ethnicity,outcome_suicidew4,weightw4,
+         res_homew4,fightw4) %>%
+  mutate(TIME='4') %>%
+  rename(BIO_SEX=BIO_SEX4,outcome_suicide=outcome_suicidew4,weight=weightw4,res_home=res_homew4,fight=fightw4) %>%
+  mutate(YEAR=2008)
+
+# Pivot to long and create wave (time) variable
+dftot <- full_join(dfw1,dfw2) %>%
+  full_join(dfw3) %>%
+  full_join(dfw4) %>%
+  mutate(TIME=as.numeric(TIME)) #wave is now time
+
+# FUNCTIONS ---------------------------------------------------------------
+#Function for chaning columns position in a dataframe for readability
+
+moveme <- function (invec, movecommand) {
+  movecommand <- lapply(strsplit(strsplit(movecommand, ";")[[1]], 
+                                 ",|\\s+"), function(x) x[x != ""])
+  movelist <- lapply(movecommand, function(x) {
+    Where <- x[which(x %in% c("before", "after", "first", 
+                              "last")):length(x)]
+    ToMove <- setdiff(x, Where)
+    list(ToMove, Where)
+  })
+  myVec <- invec
+  for (i in seq_along(movelist)) {
+    temp <- setdiff(myVec, movelist[[i]][[1]])
+    A <- movelist[[i]][[2]][1]
+    if (A %in% c("before", "after")) {
+      ba <- movelist[[i]][[2]][2]
+      if (A == "before") {
+        after <- match(ba, temp) - 1
+      }
+      else if (A == "after") {
+        after <- match(ba, temp)
+      }
+    }
+    else if (A == "first") {
+      after <- 0
+    }
+    else if (A == "last") {
+      after <- length(myVec)
+    }
+    myVec <- append(temp, values = movelist[[i]][[1]], after = after)
+  }
+  myVec
+}
+
+# Move TIME column to the be second column on the left in the dataframe
+df_final <- dftot[moveme(names(dftot),'TIME after AID')] 
+
+
+# Remove "skip to's", cleaning outcome suicide Variable
+data <- df_final %>%
+  # relevel outcome_suicide
+  mutate(outcome_suicide=fct_recode(outcome_suicide,
+                                    'No'=' No (skip to Q.4',
+                                    'No'= ' No (skip to Q4',
+                                    'No'=' No (skip to Q.133',
+                                    'No'=' No',
+                                    'Yes'=' Yes')) %>%
+  # relevel fri_talk
+  mutate(fri_talk=fct_recode(fri_talk,
+                             ' 1 or 2 times'=' 1 time',
+                             ' 1 or 2 times'=' 2 times',
+                             ' 3 or 4 times'=' 3 times',
+                             ' 3 or 4 times'=' 4 times',
+                             ' 5 or more times'=' 5 times',
+                             ' 5 or more times'=' 6 times',
+                             ' 5 or more times'=' 7 or more times')) %>%
+  # relevel weight
+  mutate(weight=fct_recode(weight,
+                           '1'=' Very underweight',
+                           '2'=' Slightly underweight',
+                           '3'=' About the right weight',
+                           '4'=' Slightly overweight',
+                           '5'=' Very overweight'))
+
+# Calculate age beased on birth year and year of survey
+data$AGE <- as.numeric(as.character(data$YEAR))-as.numeric(as.character(data$birthyr))
+
+data <- data %>% select(-c(fam_understand,safe,res_home,birthyr))
+
+# WRITE CSV (comm out) ----------------------------------------------------
+# Would save the generated dataset as a csv file in desired file path, if needed
+#write.csv(data,'./Data/reproducible_cleaned_data.csv')
+
+```
+
+### This code chunk was for loading the data, and did some data wrangling to prepare the dataset to perform analysis.
+
+- The first and second line were two methods reading in the dataset: line one was just copy and paste from the file path you have above in write.csv() function; line 2 is directly using the dataset generated. Either method should provide same resutls.
+
+- The third line just changed the order of individuals in dataset so that everyone's consecutive observations are put together.
+
+- The last line was changing the outcome variable to a factor variable to run the analysis.
+
+- Please only uncomment section (1) or section (2) to select the dataset used for model building. See READ.ME for more.
+
+```{r data wrangling}
+#Please only uncomment 
+
+#Section 1: uncomment lines 290-291 to use the original dataset and conduct perfect reproducibility:
+   # suicide <- read.csv('./Data/data_used_to_reproduce_analysis.csv') %>% 
+   #             mutate(outcome_num = ifelse(outcome_suicide== "Yes", 1, 0))
+
+#Section 2: uncomment line 293 to use your generated dataset:
+  suicide <- data
+
+#Do not comment out these lines:
+ suicide <- suicide[order(suicide$AID),]
+ suicide$outcome_suicide <- as.factor(suicide$outcome_suicide)
+ 
+```
+
+### This code was used to fit a GLMM model on suicidal ideation on age, which addressed the first reserach question: Does suicidal ideation change as subjects age?  
+
+```{r GLMM age rand.intercept}
+model.1 <- glmer(outcome_suicide ~ scale(AGE) + (1 | AID),
+                    family=binomial(link="logit"), data=suicide)
+summary(model.1)
+```
+
+### Make a table to display the previous results:
+
+- The nsmall= argument used in format function was to make R report exact number of decimals, even the last decimal was 0. 
+
+```{r Table2 warning=FALSE}
+esticon <- doBy::esticon(model.1, diag(2))
+estimate <- format(round(esticon$estimate,3), nsmall=3)
+estimate.ci <- paste("(",format(round(esticon$lwr,3), nsmall=3), 
+                     ",", round(esticon$upr,3), ")")
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", round(exp(esticon$lwr),3), 
+                     ",", round(exp(esticon$upr),3), ")")
+age.df <- data.frame("coef" = c("Intercept", "Scaled Age"),
+                     "Estimate"=estimate,
+                     "est.ci"=estimate.ci,
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci,
+                     "p" = unname(summary(model.1)$coef[,4]))
+gt(age.df, rowname_col = "coef") %>% 
+  tab_stubhead(label = "Coefficient") %>%
+  tab_header(title = md("Table 2: Fixed Effect of GLMM Model for Suicidal Ideation on Age")) %>%
+  cols_label(est.ci = "95% CI of Estimate",
+             exp.est = "Odds Ratio",
+             exp.est.ci = "95% CI of Odds Ratio",
+             p = "P-Value") %>% 
+  tab_footnote(footnote = "The GLMM model contains random intercept, and uses Binomial distribution with logit link.", 
+               locations = cells_title()) %>% 
+  cols_align(align = "center") %>% 
+  tab_style(style = cell_text(align="center"),
+            locations = cells_column_labels(columns = everything()))
+```
+
+### This code was used to fit a GEE model on suicidal ideation on age and sex, which addressed the second reserach question: Does suicidal ideation change differently for males as they age than for females?  
+
+```{r GEE sex and age}
+suicide$outcome_num <- ifelse(suicide$outcome_suicide== "Yes", 1, 0)
+model.2.ind <- geeglm(outcome_num ~ BIO_SEX * scale(AGE), id=AID, family=binomial(link="logit"), 
+                    corstr="independence", data=suicide %>% select(AID,outcome_num,BIO_SEX,AGE))
+summary(model.2.ind)
+```
+
+### Make a table to display the previous results:
+
+- The nsmall= argument used in format function was to make R report exact number of decimals, even the last decimal was 0. 
+
+```{r Table3}
+esticon <- doBy::esticon(model.2.ind, diag(4))
+estimate <- round(esticon$estimate,3)
+estimate.ci <- paste("(",format(round(esticon$lwr,3),nsmall=3), 
+                     ",", round(esticon$upr,3), ")")
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", format(round(exp(esticon$lwr),3),nsmall=3), 
+                     ",", round(exp(esticon$upr),3), ")")
+sex.ind.df <- data.frame("coef" = c("Intercept","Sex, female as reference", 
+                                "Scaled Age", "Interaction between age and sex"),
+                     "Estimate"=estimate,
+                     "est.ci"=estimate.ci,
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci,
+                     "p" = unname(summary(model.2.ind)$coef[,4]))
+gt(sex.ind.df, rowname_col = "coef") %>% 
+  tab_stubhead(label = "Coefficient") %>%
+  tab_header(title = md("Table 3: GEE Model for Suicidal Ideation on Age and Sex")) %>%
+  cols_label(est.ci = "95% CI of Estimate",
+             exp.est = "Odds Ratio",
+             exp.est.ci = "95% CI of Odds Ratio",
+             p = "P-Value") %>% 
+  tab_footnote(footnote = "The GEE model uses a Binomial distribution with logit link and an 
+               independent working correlation structure", 
+               locations = cells_title()) %>% 
+  cols_align(align = "center") %>% 
+  tab_style(style = cell_text(align="center"),
+            locations = cells_column_labels(columns = everything())) %>%
+  cols_width(contains("ci") ~ px(200),
+             p ~ px(200))
+
+```
+
+### This section was some pre-work done before we fit the GLMM model on suicial idation on self-perceived weight adjusted for age.  
+
+- THe first three lines just recoded and releveled the weight variable for an easier and more interpretable analysis.
+
+- Since weight is a categorical variable, we first tested whether the weight variable as a whole is significant or not, then we would analyze each categorical levels if it's overall a significant effect. The last three lines completes this task: performing a Likelihood Ratio Test to compare a model with amd without the weight term. If we got significant testing results, then weight as a whole is a significant factor for suicidal ideation.
+
+```{r test effect of weight eval=TRUE}
+suicide$weight <- ifelse(suicide$weight==1, "Very Underweight",
+                                  ifelse(suicide$weight==2, "Slightly Underweight",
+                                         ifelse(suicide$weight==3, "Normal",
+                                                ifelse(suicide$weight==4,"Slightly Overweight", "Very Overweight"))))
+suicide$weight <- as.factor(suicide$weight)
+suicide$weight <- fct_relevel(suicide$weight, "Normal", "Very Underweight","Slightly Underweight","Slightly Overweight")
+
+model.3.full <- glmer(outcome_suicide ~ as.factor(weight) + scale(AGE)+(1 | AID), family=binomial(link="logit"), data=suicide)
+model.3.reduced <- glmer(outcome_suicide ~ scale(AGE) + (1 | AID), family=binomial(link="logit"), data=suicide)
+anova(model.3.full,model.3.reduced, test = "Chisq")
+```
+
+### This section below was used to fit a GLMM model on suicidal ideation on self-perceived weight adjusted for age, which addressed the third reserach question: Does suicidal ideation change on self-perceived weight?
+- If an 'Error in contrasts' occurs, please attempt to rerun the data wrangling chunk. R seems to corrupt the dataframe sometimes and lose data. Reloading the dataset you were attempting to use, either by .csv or by the data cleaning code, fixes this error. 
+
+```{r GLMM fct_weight random int}
+model.3.2 <- glmer(outcome_suicide ~ weight + scale(AGE) + (1 | AID),
+                    family=binomial(link="logit"), data=suicide)
+summary(model.3.2)
+```
+
+### Make a table to display the previous results:
+- The nsmall= argument used in format function was to make R report exact number of decimals, even the last decimal was 0. 
+
+```{r Table4 warning=FALSE}
+esticon <- doBy::esticon(model.3.2, diag(6))
+estimate <- round(esticon$estimate,3)
+estimate.ci <- paste("(",format(round(esticon$lwr,3),nsmall=3), 
+                     ",", round(esticon$upr,3), ")")
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", format(round(exp(esticon$lwr),3),nsmall=3), 
+                     ",", round(exp(esticon$upr),3), ")")
+weight.df <- data.frame("coef" = c("Intercept", "Very Underweight", "Slight Underweight",
+                                "Slightly OVerweight", "Very Overweight", "Scaled Age"),
+                     "Estimate"=estimate,
+                     "est.ci"=estimate.ci,
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci,
+                     "p.overall" = c("", 
+                                     rep(signif(anova(model.3.full,model.3.reduced, test = "Chisq")$`Pr(>Chisq)`[2],3),4),
+                                     ""),
+                     'p.ind' = unname(summary(model.3.2)$coef[,4]))
+gt(weight.df, rowname_col = "coef") %>% 
+  tab_stubhead(label = "Coefficient") %>%
+  tab_header(title = md("Table 4: Fixed Effect of GLMM Model for Suicidal Ideation on Weight Adjusted for Age")) %>%
+  cols_label(est.ci = "95% CI of Estimate",
+             exp.est = "Odds Ratio",
+             exp.est.ci = "95% CI of Odds Ratio",
+             p.overall = "P-Value for Weight Variable as a whole",
+             p.ind = "P-Value for Each Estimate") %>% 
+  tab_footnote(footnote = "The GLMM model contains a random intercept, and uses Binomial distribution with logit link.", 
+               locations = cells_title()) %>% 
+  cols_align(align = "center") %>% 
+  tab_style(style = cell_text(align="center"),
+            locations = cells_column_labels(columns = everything())) %>%
+  cols_width(contains("ci") ~ px(150))
+
+```
+
+#### This code was used to fit a GLMM model for suicidal ideation on support system adjusted for age, which addressed the fourth research question: For young individuals, does suicidal ideation change based on the level of support system they have, where support system is defined by perceived attention from family, frequency of lying to family, perceived caring from friends, frequency of talking to friends, and frequency of helping friends fight against others?
+
+- This section was assigning scores to each variables that we thought would relate to the support system, then the support system score was just the sum of each sub-score. A higher score means a more robust supprot system a person had.
+
+```{r single var for support system}
+suicide_sub <- dplyr::filter(suicide, TIME %in% c(1,2))
+suicide_sub$attention_score <- ifelse(suicide_sub$fam_attention==" Does not apply", 1,
+                                  ifelse(suicide_sub$fam_attention==" Not at all", 1,
+                                         ifelse(suicide_sub$fam_attention==" Very little", 2,
+                                                ifelse(suicide_sub$fam_attention==" Somewhat",3,
+                                                       ifelse(suicide_sub$fam_attention==" Quite a bit",4,5)))))
+suicide_sub$care_score <- ifelse(suicide_sub$fri_care==" Does not apply", 1,
+                                  ifelse(suicide_sub$fri_care==" Not at all", 1,
+                                         ifelse(suicide_sub$fri_care==" Very little", 2,
+                                                ifelse(suicide_sub$fri_care==" Somewhat",3,
+                                                       ifelse(suicide_sub$fri_care==" Quite a bit",4,5)))))
+suicide_sub$talk_score <- ifelse(suicide_sub$fri_talk==" Not at all", 1,
+                                  ifelse(suicide_sub$fri_talk==" 1 or 2 times", 2,
+                                         ifelse(suicide_sub$fri_talk==" 3 or 4 times", 3, 4)))
+suicide_sub$lie_score <- ifelse(suicide_sub$lie==" 5 or more times", 1,
+                                  ifelse(suicide_sub$lie==" 3 or 4 times",2,
+                                         ifelse(suicide_sub$lie==" 1 or 2 times", 3, 4)))
+suicide_sub$fight_score <- ifelse(suicide_sub$fight==" Never", 1,
+                                  ifelse(suicide_sub$fight==" 1 or 2 times", 2,
+                                         ifelse(suicide_sub$fight==" 3 or 4 times", 3, 4)))
+
+suicide_sub$support = suicide_sub$attention_score+suicide_sub$care_score+suicide_sub$talk_score+
+  suicide_sub$lie_score+suicide_sub$fight_score
+```
+
+#### This section was fitting the GLMM model.
+
+```{r GLMM support+age rand.intercept}
+suicide_sub$support <- suicide_sub$support-5
+model.4.2 <- glmer(outcome_suicide ~ support + scale(AGE) + (1 | AID), nAGQ = 50,
+                    family=binomial(link="logit"), data=suicide_sub)
+summary(model.4.2)
+```
+
+#### Make a table to display the previous results:
+
+- The nsmall= argument used in format function was to make R report exact number of decimals, even the last decimal was 0.
+
+```{r Table5 warning=FALSE}
+esticon <- doBy::esticon(model.4.2, diag(3))
+estimate <- round(esticon$estimate,3)
+estimate.ci <- paste("(",format(round(esticon$lwr,3),nsmall=3), 
+                     ",", round(esticon$upr,3), ")")
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", format(round(exp(esticon$lwr),3),nsmall=3), 
+                     ",", round(exp(esticon$upr),3), ")")
+support.df <- data.frame("coef" = c("Intercept", "Support Score", "Scaled Age"),
+                     "Estimate"=estimate,
+                     "est.ci"=estimate.ci,
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci,
+                     "p" = unname(summary(model.4.2)$coef[,4]))
+gt(support.df, rowname_col = "coef") %>% 
+  tab_stubhead(label = "Coefficient") %>%
+  tab_header(title = md("Table 5: Fixed Effect of GLMM Model for Suicidal Ideation on Support System Adjusted for Age")) %>%
+  cols_label(est.ci = "95% CI of Estimate",
+             exp.est = "Odds Ratio",
+             exp.est.ci = "95% CI of Odds Ratio",
+             p = "P-Value") %>% 
+  tab_footnote(footnote = "The GLMM model contains a random intercept, and uses Binomial distribution with logit link.", 
+               locations = cells_title()) %>% 
+  cols_align(align = "center") %>% 
+  tab_style(style = cell_text(align="center"),
+            locations = cells_column_labels(columns = everything()))
+
+```
+
+#### Sensitivity analysis  
+
+#### GEE model fitted with differnet working correlation  
+
+Exchangeable:
+```{r GEE num_suicide exch}
+model.2.exch <- geeglm(outcome_num ~ BIO_SEX * scale(AGE), id=AID, family=binomial(link="logit"), 
+                    corstr="exchangeable", data=suicide)
+summary(model.2.exch)
+```
+
+Unstructured:
+```{r GEE num_suicide unstr}
+model.2.unstr <- geeglm(outcome_num ~ BIO_SEX * scale(AGE), id=AID, family=binomial(link="logit"), 
+                    corstr="unstructured", data=suicide)
+summary(model.2.unstr)
+```
+
+- Making a table for easier comparison
+```{r fig.width=8}
+esticon <- doBy::esticon(model.2.exch, diag(4))
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", format(round(exp(esticon$lwr),3),nsmall=3), 
+                     ",", round(exp(esticon$upr),3), ")")
+sex.ex.df <- data.frame("coef" = c("Intercept","Sex, female as reference", 
+                                "Scaled Age", "Interaction between age and sex"),
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci)
+
+esticon <- doBy::esticon(model.2.unstr, diag(4))
+exp.est <- round(exp(esticon$estimate),3)
+exp.est.ci <- paste("(", format(round(exp(esticon$lwr),3),nsmall=3), 
+                     ",", round(exp(esticon$upr),3), ")")
+sex.unstr.df <- data.frame("coef" = c("Intercept","Sex, female as reference", 
+                                "Scaled Age", "Interaction between age and sex"),
+                     "exp.est" = exp.est,
+                     "exp.est.ci" = exp.est.ci)
+
+
+
+sex.df <- sex.ind.df %>%
+  dplyr::select(coef, exp.est, exp.est.ci) %>%
+  full_join(sex.ex.df, by = c("coef")) %>% 
+  full_join(sex.unstr.df, by = "coef")
+  
+
+gt(sex.df, rowname_col = "coef") %>% 
+  tab_stubhead(label = "Coefficient") %>%
+  tab_header(title = md("Table 6: Comparing GEE Models for Suicidal Ideation on Age and Sex with 3 Different Correlation Structures")) %>%
+  tab_spanner(label = "Independent", columns = c("exp.est.x", "exp.est.ci.x")) %>%
+  tab_spanner(label = "Exchangeable", columns = c("exp.est.y", "exp.est.ci.y")) %>%
+  tab_spanner(label = "Unstructured", columns = c("exp.est", "exp.est.ci")) %>%
+  cols_label(exp.est.x = "Odds Ratio",
+             exp.est.y = "Odds Ratio",
+             exp.est = "Odds Ratio",
+             exp.est.ci = "95% CI of Odds Ratio",
+             exp.est.ci.x = "95% CI of Odds Ratio",
+             exp.est.ci.y = "95% CI of Odds Ratio") %>% 
+  cols_align(align = "center") %>% 
+  tab_style(style = cell_text(align="center"),
+            locations = cells_column_labels(columns = everything())) %>%
+  cols_width(contains("ci") ~ px(300))
+
+```
+
+
+##### This section was testing whether random intercept was significant for the GLMM model on age.
+
+```{r}
+model_full = glmer(outcome_suicide ~ scale(AGE) + (1 | AID), family=binomial(link="logit"), data=suicide)
+model_reduced = glm(outcome_suicide ~ scale(AGE), family=binomial(link="logit"), data=suicide)
+#a conservative approach (i.e., larger p-value) is using the anova function, which assumes the reference distribution is chi-squared w/ 1 df
+anova(model_full, model_reduced)
+```
+
+
+##### This section was testing whether random intercept was significant for the GLMM model on weight adjusting for age.
+
+```{r}
+model_full = glmer(outcome_suicide ~ weight + scale(AGE) + (1 | AID), family=binomial(link="logit"), data=suicide)
+model_reduced = glm(outcome_suicide ~ weight + scale(AGE), family=binomial(link="logit"), data=suicide)
+#a conservative approach (i.e., larger p-value) is using the anova function, which assumes the reference distribution is chi-squared w/ 1 df
+anova(model_full, model_reduced)
+```
+
+##### This section generates Table 1, summarizing various population parameters from our dataset.
+
+- This section generates the output for Table 1. The final report contains a manually formatted version containing the data generated below. Please note that the data cleaning chunk must be run for this to work.
+
+```{r}
+#Repeat Cleaning for Table1 dataframe UNIMPUTED DATA
+  dfw1_tb1 <- tb1.data %>% 
+  select(AID,birthyr,BIO_SEX,race,ethnicity,outcome_suicidew1,weightw1,
+         fam_understandw1,fam_attentionw1,liew1,fri_carew1,
+         fri_talkw1,safew1,res_homew1,fightw1) %>%
+  mutate(TIME='1') %>%
+  rename(outcome_suicide=outcome_suicidew1,weight=weightw1,
+         fam_understand=fam_understandw1,fam_attention=fam_attentionw1,
+         lie=liew1,fri_care=fri_carew1,fri_talk=fri_talkw1,safe=safew1,
+         res_home=res_homew1,fight=fightw1) %>%
+  mutate(YEAR=1994)
+
+# Select wave2 columns, rename for readability, and add year             
+dfw2_tb1 <- tb1.data %>% 
+  select(AID,birthyr,BIO_SEX2,race,ethnicity,outcome_suicidew2,weightw2,
+         fam_attentionw2,liew2,fri_carew2,fri_talkw2,safew2,
+         res_homew2,fightw2) %>%
+  mutate(TIME='2') %>%
+  rename(BIO_SEX=BIO_SEX2,outcome_suicide=outcome_suicidew2,weight=weightw2,
+         fam_attention=fam_attentionw2,lie=liew2,fri_care=fri_carew2,
+         fri_talk=fri_talkw2,safe=safew2,res_home=res_homew2,fight=fightw2) %>%
+  mutate(YEAR=1996)
+
+# Select wave3 columns, rename for readability, and add year 
+dfw3_tb1 <- tb1.data %>%
+  select(AID,birthyr,BIO_SEX3,race,ethnicity,outcome_suicidew3,weightw3,fri_talkw3,res_homew3,fightw3)%>%
+  mutate(TIME='3') %>%
+  rename(BIO_SEX=BIO_SEX3,outcome_suicide=outcome_suicidew3,weight=weightw3,
+         fri_talk=fri_talkw3, res_home=res_homew3, fight=fightw3) %>%
+  mutate(YEAR=2002)
+
+# Select wave4 columns, rename for readability, and add year        
+dfw4_tb1 <- tb1.data %>%
+  select(AID,birthyr,BIO_SEX4,race,ethnicity,outcome_suicidew4,weightw4,
+         res_homew4,fightw4) %>%
+  mutate(TIME='4') %>%
+  rename(BIO_SEX=BIO_SEX4,outcome_suicide=outcome_suicidew4,weight=weightw4,res_home=res_homew4,fight=fightw4) %>%
+  mutate(YEAR=2008)
+
+# Pivot to long and create wave (time) variable
+dftot_tb1 <- full_join(dfw1_tb1,dfw2_tb1) %>%
+  full_join(dfw3_tb1) %>%
+  full_join(dfw4_tb1) %>%
+  mutate(TIME=as.numeric(TIME)) #wave is now time
+
+# Move TIME column to the be second column on the left in the dataframe
+df_final_tb1 <- dftot_tb1[moveme(names(dftot_tb1),'TIME after AID')] 
+
+
+# Remove "skip to's", cleaning outcome suicide Variable
+data_tb1 <- df_final_tb1 %>%
+  # relevel outcome_suicide
+  mutate(outcome_suicide=fct_recode(outcome_suicide,
+                                    'No'=' No (skip to Q.4',
+                                    'No'= ' No (skip to Q4',
+                                    'No'=' No (skip to Q.133',
+                                    'No'=' No',
+                                    'Yes'=' Yes')) %>%
+  # relevel fri_talk
+  mutate(fri_talk=fct_recode(fri_talk,
+                             ' 1 or 2 times'=' 1 time',
+                             ' 1 or 2 times'=' 2 times',
+                             ' 3 or 4 times'=' 3 times',
+                             ' 3 or 4 times'=' 4 times',
+                             ' 5 or more times'=' 5 times',
+                             ' 5 or more times'=' 6 times',
+                             ' 5 or more times'=' 7 or more times'))
+ 
+# Calculate age beased on birth year and year of survey
+data_tb1$AGE <- as.numeric(as.character(data_tb1$YEAR))-as.numeric(as.character(data_tb1$birthyr))
+
+data_tb1 <- data_tb1 %>% select(-c(fam_understand,safe,res_home,birthyr))
+
+#Calculate Support Score
+  data_tb1 <- dplyr::filter(data_tb1, TIME %in% c(1,2,3,4))
+  data_tb1$attention_score <- ifelse(data_tb1$fam_attention==" Does not apply", 1,
+                                    ifelse(data_tb1$fam_attention==" Not at all", 1,
+                                           ifelse(data_tb1$fam_attention==" Very little", 2,
+                                                  ifelse(data_tb1$fam_attention==" Somewhat",3,
+                                                         ifelse(data_tb1$fam_attention==" Quite a bit",4,5)))))
+  data_tb1$care_score <- ifelse(data_tb1$fri_care==" Does not apply", 1,
+                                    ifelse(data_tb1$fri_care==" Not at all", 1,
+                                           ifelse(data_tb1$fri_care==" Very little", 2,
+                                                  ifelse(data_tb1$fri_care==" Somewhat",3,
+                                                         ifelse(data_tb1$fri_care==" Quite a bit",4,5)))))
+  data_tb1$talk_score <- ifelse(data_tb1$fri_talk==" Not at all", 1,
+                                    ifelse(data_tb1$fri_talk==" 1 or 2 times", 2,
+                                           ifelse(data_tb1$fri_talk==" 3 or 4 times", 3, 4)))
+  data_tb1$lie_score <- ifelse(data_tb1$lie==" 5 or more times", 1,
+                                    ifelse(data_tb1$lie==" 3 or 4 times",2,
+                                           ifelse(data_tb1$lie==" 1 or 2 times", 3, 4)))
+  data_tb1$fight_score <- ifelse(data_tb1$fight==" Never", 1,
+                                    ifelse(data_tb1$fight==" 1 or 2 times", 2,
+                                           ifelse(data_tb1$fight==" 3 or 4 times", 3, 4)))
+  
+  data_tb1$support = data_tb1$attention_score+data_tb1$care_score+data_tb1$talk_score+
+    data_tb1$lie_score+data_tb1$fight_score
+
+#Stratify by outcome
+id_suicide <- data_tb1 %>% subset(outcome_suicide=='Yes') 
+      id_yes <- as.vector((unique(id_suicide$AID)))
+  
+  data_suicide <- data_tb1 %>%
+                  subset(TIME==1) %>%
+                  subset(AID %in% id_yes) %>%
+                  mutate(Suicidality=1)
+                  
+  data_nosuicide <- data_tb1 %>%
+                    subset(TIME==1) %>%
+                    subset(!(AID %in% id_yes))%>%
+                    mutate(Suicidality=0)
+  tb1_df <- rbind(data_suicide,data_nosuicide) %>%
+            rename(Age=AGE, Sex = BIO_SEX, Percieved_weight = weight,Attention_from_family = fam_attention, 
+            Care_from_friends=fri_care,Talk_to_friends=fri_talk, Lie_to_family=lie,Fighting=fight,Support_score=support)
+  
+#Make Table 1
+  vars = c('Age', 'Sex', 'Percieved_weight','Attention_from_family', 
+            'Care_from_friends','Talk_to_friends', 'Lie_to_family','Fighting','Support_score')
+  tableOne <- CreateTableOne(vars = vars, strata = "Suicidality", data = tb1_df)
+  tableOne
+```
+```
+
+
